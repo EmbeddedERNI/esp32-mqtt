@@ -64,20 +64,22 @@ void data_cb(void *self, void *params)
         free(topic);
     }
 
-    // char *data = malloc(event_data->data_length + 1);
-    // memcpy(data, event_data->data, event_data->data_length);
-    // data[event_data->data_length] = 0;
+    char *data = malloc(event_data->data_length + 1);
+    memcpy(data, event_data->data, event_data->data_length);
+    data[event_data->data_length] = 0;
+
     ESP_LOGI(MQTT_TAG, "[APP] Publish data[%d/%d bytes]",
              event_data->data_length + event_data->data_offset,
              event_data->data_total_length);
-    // data);
 
-    // free(data);
+    ESP_LOGI(MQTT_TAG, "[APP] Publish data[%s]", data);
+
+    free(data);
 
 }
 
 mqtt_settings settings = {
-    .host = "test.mosquitto.org",
+    .host = "192.168.34.18",
 #if defined(CONFIG_MQTT_SECURITY_ON)
     .port = 8883, // encrypted
 #else
@@ -94,7 +96,7 @@ mqtt_settings settings = {
     .lwt_retain = 0,
     .connected_cb = connected_cb,
     .disconnected_cb = disconnected_cb,
-    .reconnect_cb = reconnect_cb,
+//    .reconnect_cb = reconnect_cb,
     .subscribe_cb = subscribe_cb,
     .publish_cb = publish_cb,
     .data_cb = data_cb
