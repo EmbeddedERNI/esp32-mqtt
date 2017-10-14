@@ -22,9 +22,6 @@
 
 const char *MQTT_TAG = "MQTT_SAMPLE";
 
-static EventGroupHandle_t wifi_event_group;
-const static int CONNECTED_BIT = BIT0;
-
 void connected_cb(void *self, void *params)
 {
     mqtt_client *client = (mqtt_client *)self;
@@ -111,7 +108,6 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
             esp_wifi_connect();
             break;
         case SYSTEM_EVENT_STA_GOT_IP:
-            xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
             mqtt_start(&settings);
             //init app here
             break;
@@ -120,7 +116,6 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
                auto-reassociate. */
             esp_wifi_connect();
             mqtt_stop();
-            xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
             break;
         default:
             break;
@@ -131,7 +126,6 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 static void wifi_conn_init(void)
 {
     tcpip_adapter_init();
-    wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_event_loop_init(wifi_event_handler, NULL));
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
