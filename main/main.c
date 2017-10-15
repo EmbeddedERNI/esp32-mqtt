@@ -19,39 +19,95 @@
 
 #include "esp_log.h"
 #include "mqtt.h"
+#include "driver/gpio.h"
+
+#define PIN_OUTPUT  GPIO_NUM_23
+#define PIN_INPUT   GPIO_NUM_22
+
+const gpio_config_t g_gpio_config[] = {
+    { 1<<PIN_OUTPUT, GPIO_MODE_OUTPUT|GPIO_MODE_INPUT, GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_DISABLE, GPIO_INTR_DISABLE }
+,   { 1<<PIN_INPUT,  GPIO_MODE_INPUT,                  GPIO_PULLUP_ENABLE,  GPIO_PULLDOWN_DISABLE, GPIO_INTR_NEGEDGE }
+,   { 0 }
+};
+
+static SemaphoreHandle_t g_semaphore = NULL;
+static mqtt_client *g_mqtt_client = NULL;
+
+static void IRAM_ATTR my_isr_handler(void* arg)
+{
+    if(g_semaphore)
+    {
+        if(pdTRUE != xSemaphoreGiveFromISR(g_semaphore, NULL))
+        {   // Handle the error
+        } 
+    }
+}
+
+static void my_task(void* arg)
+{
+    static TickType_t wait_for = 5000 / portTICK_PERIOD_MS;
+
+    if (g_semaphore)
+    {
+        for(;;)
+        {
+            if(pdTRUE == xSemaphoreTake(g_semaphore, wait_for))
+            {
+                if(ESP_OK==gpio_set_level(PIN_OUTPUT, !gpio_get_level( PIN_OUTPUT )))
+                {
+                    printf("Setting level %u for pin #%u!\n", gpio_get_level( PIN_OUTPUT ), PIN_OUTPUT);
+                }
+                else 
+                {
+                    printf("ERROR during gpio_set_level for pin #%u!\n", PIN_OUTPUT);
+                }
+            }
+
+            if(g_mqtt_client)
+            {
+                char s[10] = { 0 };
+                sprintf(s, "OUT=%u",gpio_get_level( PIN_OUTPUT ));
+                mqtt_publish(g_mqtt_client, "/test", s, strlen(s), 0, 0);
+            }
+        }
+    }
+    else
+    {
+        printf("ERROR. The semaphore must be created first!\n");
+    }
+}
+
 
 const char *MQTT_TAG = "MQTT_SAMPLE";
 
-void connected_cb(void *self, void *params)
+void connected_cb(mqtt_client *client, mqtt_event_data_t *event_data)
 {
-    mqtt_client *client = (mqtt_client *)self;
+    g_mqtt_client = client;
     mqtt_subscribe(client, "/test", 0);
-    mqtt_publish(client, "/test", "howdy!", 6, 0, 0);
+    mqtt_publish(client, "/test", "BEGIN!", 6, 0, 0);
 }
-void disconnected_cb(void *self, void *params)
+void disconnected_cb(mqtt_client *client, mqtt_event_data_t *event_data)
 {
-
+    g_mqtt_client = NULL;
+    ESP_LOGI(MQTT_TAG, "[APP] disconnected callback");
 }
-void reconnect_cb(void *self, void *params)
-{
-
+void reconnect_cb(mqtt_client *client, mqtt_event_data_t *event_data)
+{ 
+    g_mqtt_client = client;
+    ESP_LOGI(MQTT_TAG, "[APP] reconnect callback");
 }
-void subscribe_cb(void *self, void *params)
+void subscribe_cb(mqtt_client *client, mqtt_event_data_t *event_data)
 {
     ESP_LOGI(MQTT_TAG, "[APP] Subscribe ok, test publish msg");
-    mqtt_client *client = (mqtt_client *)self;
     mqtt_publish(client, "/test", "abcde", 5, 0, 0);
 }
 
-void publish_cb(void *self, void *params)
+void publish_cb(mqtt_client *client, mqtt_event_data_t *event_data)
 {
-
+    ESP_LOGI(MQTT_TAG, "[APP] publish callback"); 
 }
-void data_cb(void *self, void *params)
+void data_cb(mqtt_client *client, mqtt_event_data_t *event_data)
 {
-    mqtt_client *client = (mqtt_client *)self;
-    mqtt_event_data_t *event_data = (mqtt_event_data_t *)params;
-
     if(event_data->data_offset == 0) {
 
         char *topic = malloc(event_data->topic_length + 1);
@@ -68,6 +124,13 @@ void data_cb(void *self, void *params)
     ESP_LOGI(MQTT_TAG, "[APP] Publish data[%d/%d bytes]",
              event_data->data_length + event_data->data_offset,
              event_data->data_total_length);
+
+    if(g_semaphore && 0==strcmp(data, "TOGGLE"))
+    {
+        if(pdTRUE != xSemaphoreGive(g_semaphore))
+        {   // Handle the error
+        }
+    }
 
     ESP_LOGI(MQTT_TAG, "[APP] Publish data[%s]", data);
 
@@ -87,13 +150,12 @@ mqtt_settings settings = {
     .password = "pass",
     .clean_session = 0,
     .keepalive = 120,
-    .lwt_topic = "/lwt",
+    .lwt_topic = "/test",
     .lwt_msg = "offline",
     .lwt_qos = 0,
     .lwt_retain = 0,
     .connected_cb = connected_cb,
     .disconnected_cb = disconnected_cb,
-//    .reconnect_cb = reconnect_cb,
     .subscribe_cb = subscribe_cb,
     .publish_cb = publish_cb,
     .data_cb = data_cb
@@ -148,6 +210,34 @@ void app_main()
     ESP_LOGI(MQTT_TAG, "[APP] Free memory: %d bytes", system_get_free_heap_size());
     ESP_LOGI(MQTT_TAG, "[APP] SDK version: %s, Build time: %s", system_get_sdk_version(), BUID_TIME);
 
+    int i;
+
+
+    for(i=0; g_gpio_config[i].pin_bit_mask; ++i)
+    {
+        if(ESP_OK!=gpio_config(&g_gpio_config[i]))
+        {
+            printf("ERROR during gpio_config for 0x%016llX mask!\n", g_gpio_config[i].pin_bit_mask);
+        }
+    }
+
+    //create a semaphore to synchronize events between the ISR and the worker task
+    g_semaphore = xSemaphoreCreateBinary();
+
+    //start worker task
+    xTaskCreate(my_task, "my_task", 2048, NULL, 10, NULL);
+
+    //install gpio isr service
+    gpio_install_isr_service(0);
+
+    //hook isr handler for specific gpio pin
+    gpio_isr_handler_add(PIN_INPUT, my_isr_handler, (void*) PIN_INPUT);
+
     nvs_flash_init();
     wifi_conn_init();
+
+    for(;;)
+    {   // Wait forever
+        vTaskDelay( portMAX_DELAY );
+    } 
 }
